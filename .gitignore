@@ -1,0 +1,26 @@
+# Fichiers Arduino
+*.hex
+*.bin
+*.elf
+
+# Fichiers de configuration sensibles
+.env
+config.h
+secrets.h
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Données de test
+*.csv
+*.json
