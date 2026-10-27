@@ -1,3 +1,6 @@
+[![Build Status](badge)](link) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Platform: ESP32](badge)] [![PRs Welcome](badge)]
+
+**Languages:** [English](README.md) | [Français](README.fr.md)
 # IoT-GG Medical Gas Monitor — V1.0
 ### Plateforme intelligente de supervision des réseaux de gaz médicaux hospitaliers
 ### Module Oxygène (MVP) · Conçu à partir de l'étude architecturale de l'HGOPED Douala
