@@ -65,6 +65,8 @@ const unsigned long INTERVALLE_PRESSION = 5000; // 5 secondes
 unsigned long dernierPingRecu = 0;
 const unsigned long TIMEOUT_WATCHDOG = 15000; // 15s = 3 pings ratés
 bool liaisonEsclaveOK = true;
+unsigned long dernierRappel = 0;
+const unsigned long INTERVALLE_RAPPEL = 45000; // rappel toutes les 45 s
 
 uint32_t compteurTrames = 0;
 
@@ -74,10 +76,32 @@ uint32_t compteurTrames = 0;
 #define SEUIL_ALERTE    1.00f
 #define SEUIL_ATTENTION 1.50f
 
+#define NB_ECHANTILLONS 50
+float bufferPression[NB_ECHANTILLONS];
+int indexBuffer = 0;
+bool bufferRempli = false;
+
 // ─────────────────────────────────────────────────────────────
 //  LECTURE PRESSION
 // ─────────────────────────────────────────────────────────────
-float lirePression() {
+
+float lirePressionNonBloquant() {
+  int brute = analogRead(PIN_ADC);          // 1 seule lecture, ~0,1 ms
+  bufferPression[indexBuffer] = brute;
+  indexBuffer = (indexBuffer + 1) % NB_ECHANTILLONS;
+  if (indexBuffer == 0) bufferRempli = true;
+
+  int n = bufferRempli ? NB_ECHANTILLONS : indexBuffer;
+  long somme = 0;
+  for (int i = 0; i < n; i++) somme += bufferPression[i];
+  float moy = somme / (float)n;
+
+  float tension = (moy / 4095.0f) * 3.3f * 1.5f;
+  float kPa = ((tension / 5.0f) + 0.04f) / 0.00369f;
+  return kPa / 100.0f;
+}
+//
+/*float lirePression() {
   long somme = 0;
   for (int i = 0; i < NUM_READINGS; i++) {
     somme += analogRead(PIN_ADC);
@@ -87,7 +111,7 @@ float lirePression() {
   float tension = (moy / 4095.0f) * 3.3f * 1.5f;
   float kPa     = ((tension / 5.0f) + 0.04f) / 0.00369f;
   return kPa / 100.0f;
-}
+}*/
 
 String determinerStatut(float p) {
   if (p >= SEUIL_ATTENTION) return "NORMAL";
@@ -101,7 +125,7 @@ String determinerStatut(float p) {
 // Nouveau format pour ESP32 core 3.x
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
-    Serial.println("⚠ Echec envoi ESP-NOW");
+    Serial.println(" Echec envoi ESP-NOW");
   }
 }
 
@@ -115,12 +139,12 @@ void onDataRecv(const esp_now_recv_info *info, const uint8_t *incomingData, int 
     memcpy(&dataPing, incomingData, sizeof(dataPing));
     
     if (dataPing.estPing) {
-      Serial.println("📡 Ping reçu de l'esclave"); // Message demandé
+      Serial.println("Ping reçu de l'esclave"); // Message demandé
       dernierPingRecu = millis();
       
       // Si on était en alerte, on rétablit la liaison
       if (!liaisonEsclaveOK) {
-        Serial.println("✅ Liaison rétablie avec l'esclave.");
+        Serial.println(" Liaison rétablie avec l'esclave.");
         liaisonEsclaveOK = true;
       }
 
@@ -151,13 +175,12 @@ void setup() {
 
   // ── Initialisation ESP-NOW ──────────────────────────────────
   if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ Erreur init ESP-NOW");
+    Serial.println(" Erreur init ESP-NOW");
     return;
   }
   Serial.println("✓ ESP-NOW initialise");
 
   // ── Enregistrement des callbacks ────────────────────────────
-  esp_now_register_send_cb((esp_now_send_cb_t)onDataSent);
   esp_now_register_send_cb((esp_now_send_cb_t)onDataSent);
   esp_now_register_recv_cb((esp_now_recv_cb_t)onDataRecv);
 
@@ -167,10 +190,10 @@ void setup() {
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("❌ Echec ajout du peer esclave");
+    Serial.println(" Echec ajout du peer esclave");
     return;
   }
-  Serial.println("✓ Peer esclave enregistre");
+  Serial.println("Peer esclave enregistre");
   Serial.println("=== Pret - Boucle principale ===\n");
 
   dernierPingRecu = millis(); // Initialise pour éviter fausse alerte au démarrage
@@ -192,7 +215,8 @@ void loop() {
     String statut = determinerStatut(p);
 
     dataPression.pression = p;
-    strncpy(dataPression.statut, statut.c_str(), sizeof(dataPression.statut));// strncpy??
+    strncpy(dataPression.statut, statut.c_str(), sizeof(dataPression.statut) - 1);
+    dataPression.statut[sizeof(dataPression.statut) - 1] = '\0';
     dataPression.compteur = compteurTrames++;
 
     esp_err_t result = esp_now_send(adresseMacEsclave,
@@ -213,17 +237,20 @@ void loop() {
   // ──────────────────────────────────────────────────────────
   unsigned long tempsPerdu = maintenant - dernierPingRecu;
   
-  if (tempsPerdu > 15000 && tempsPerdu < 15500) {
-    if (liaisonEsclaveOK) {
-      liaisonEsclaveOK = false;
-      Serial.println("⚠️ ALERTE : Esclave injoignable depuis 15s !");
-    }
-  }
-  
-  // Affiche un rappel toutes les 45 secondes si toujours déconnecté
-  if (tempsPerdu > 45000 && (tempsPerdu % 45000 < 500)) {
-     Serial.println("⚠️ ALERTE : Esclave toujours injoignable depuis 45s !");
-  }
+// Déclenchement unique au franchissement du seuil
+if (liaisonEsclaveOK && tempsPerdu > TIMEOUT_WATCHDOG) {
+  liaisonEsclaveOK = false;
+  dernierRappel = maintenant;
+  Serial.println(" ALERTE : Esclave injoignable depuis >15 s !");
+  // Déclenchement du SMS "Défaillance système"
+}
+
+// Rappels périodiques tant que la liaison est perdue
+if (!liaisonEsclaveOK && (maintenant - dernierRappel >= INTERVALLE_RAPPEL)) {
+  dernierRappel = maintenant;
+  Serial.print(" Rappel : liaison perdue depuis ");
+  Serial.print(tempsPerdu / 1000);
+  Serial.println(" s");
 }
 /*
  * ============================================================
